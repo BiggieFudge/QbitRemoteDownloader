@@ -88,14 +88,7 @@ A private Telegram bot that allows authorized users to search for movies and TV 
 5. Set username and password (or update in `.env`)
 6. Apply and restart qBittorrent
 
-### 4. Get TorrentLeech API Token
-
-1. Log in to your TorrentLeech account
-2. Go to your profile settings
-3. Generate an API token
-4. Add the token to your `.env` file
-
-### 5. Create Download Directories
+### 4. Create Download Directories
 
 Create the following directories:
 - `E:\Movies` (or your preferred movies path)
