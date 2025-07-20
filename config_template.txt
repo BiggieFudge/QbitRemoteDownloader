@@ -1,0 +1,31 @@
+# Copy this content to a new file named ".env" in your project root directory
+
+# Telegram Bot Configuration
+TELEGRAM_BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrsTUVwxyz
+# Replace with your actual bot token from @BotFather
+
+# Prowlarr Configuration  
+PROWLARR_API_KEY=c70b2444500d4ecbb9a1446073448cfc
+PROWLARR_BASE_URL=http://localhost:9696
+# Replace with your actual Prowlarr API key and URL
+
+# TMDB Configuration
+TMDB_API_KEY=your_tmdb_bearer_token_here
+# Get your TMDB Bearer token from https://www.themoviedb.org/settings/api
+# This should be the Bearer token, not the API key
+
+# qBittorrent Configuration
+QBITTORRENT_HOST=localhost
+QBITTORRENT_PORT=8080
+QBITTORRENT_USERNAME=admin
+QBITTORRENT_PASSWORD=admin
+# Update username/password if you changed qBittorrent Web UI settings
+
+# Download Paths
+MOVIES_DOWNLOAD_PATH=E:\Movies
+TVSHOWS_DOWNLOAD_PATH=E:\TVShows
+# Update these paths if you want different download locations
+
+# Authorized Users (comma-separated Telegram user IDs)
+AUTHORIZED_USERS=123456789
+# Replace with your actual Telegram user ID (get it from @userinfobot) 
