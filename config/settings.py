@@ -1,8 +1,11 @@
 import os
+import logging
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 class Settings:
     # Telegram Bot Configuration
@@ -22,12 +25,37 @@ class Settings:
     MOVIES_DOWNLOAD_PATH = os.getenv('MOVIES_DOWNLOAD_PATH', 'E:\\Movies')
     TVSHOWS_DOWNLOAD_PATH = os.getenv('TVSHOWS_DOWNLOAD_PATH', 'E:\\TVShows')
     
-    # Authorized Users
-    AUTHORIZED_USERS = [
-        int(user_id.strip()) 
-        for user_id in os.getenv('AUTHORIZED_USERS', '').split(',') 
-        if user_id.strip()
-    ]
+    # Authorized Users - Improved parsing with better error handling
+    def _parse_authorized_users():
+        """Parse authorized users from environment variable with better error handling."""
+        authorized_users_str = os.getenv('AUTHORIZED_USERS', '')
+        logger.info(f"Raw AUTHORIZED_USERS environment variable: '{authorized_users_str}'")
+        
+        if not authorized_users_str.strip():
+            logger.warning("AUTHORIZED_USERS environment variable is empty or not set!")
+            return []
+        
+        try:
+            # Split by comma and clean up each user ID
+            user_ids = []
+            for user_id_str in authorized_users_str.split(','):
+                user_id_str = user_id_str.strip()
+                if user_id_str:  # Only process non-empty strings
+                    try:
+                        user_id = int(user_id_str)
+                        user_ids.append(user_id)
+                        logger.debug(f"Successfully parsed user ID: {user_id}")
+                    except ValueError as e:
+                        logger.error(f"Failed to parse user ID '{user_id_str}': {e}")
+            
+            logger.info(f"Successfully parsed {len(user_ids)} authorized users: {user_ids}")
+            return user_ids
+            
+        except Exception as e:
+            logger.error(f"Error parsing AUTHORIZED_USERS: {e}")
+            return []
+    
+    AUTHORIZED_USERS = _parse_authorized_users()
     
     # Pagination
     RESULTS_PER_PAGE = 8

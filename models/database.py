@@ -112,6 +112,7 @@ class Database:
                     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ''', (user_id, state, search_query, current_page))
                 conn.commit()
+                logger.info(f"[DB] Updated session for user {user_id}: state={state}, query={search_query}, page={current_page}")
         except Exception as e:
             logger.error(f"Error updating user session: {e}")
     
@@ -127,12 +128,44 @@ class Database:
                 ''', (user_id,))
                 result = cursor.fetchone()
                 if result:
-                    return {
+                    session_data = {
                         'current_state': result[0],
                         'search_query': result[1],
                         'current_page': result[2]
                     }
+                    logger.debug(f"[DB] Retrieved session for user {user_id}: {session_data}")
+                    return session_data
+                logger.debug(f"[DB] No session found for user {user_id}")
                 return None
         except Exception as e:
             logger.error(f"Error getting user session: {e}")
-            return None 
+            return None
+    
+    def create_user_session(self, user_id: int, state: str = 'idle'):
+        """Create a new user session."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT OR REPLACE INTO user_sessions 
+                    (user_id, current_state, last_activity)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                ''', (user_id, state))
+                conn.commit()
+                logger.info(f"[DB] Created session for user {user_id} with state: {state}")
+        except Exception as e:
+            logger.error(f"Error creating user session: {e}")
+    
+    def clear_user_session(self, user_id: int):
+        """Clear user session state."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    DELETE FROM user_sessions 
+                    WHERE user_id = ?
+                ''', (user_id,))
+                conn.commit()
+                logger.info(f"[DB] Cleared session for user {user_id}")
+        except Exception as e:
+            logger.error(f"Error clearing user session: {e}") 

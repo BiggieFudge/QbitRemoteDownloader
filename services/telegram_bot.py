@@ -21,6 +21,9 @@ class TelegramBot:
         self.tmdb_client = TMDBClient()
         self.database = Database()
         
+        # Log authorized users on startup
+        logger.info(f"Bot initialized with {len(self.settings.AUTHORIZED_USERS)} authorized users: {self.settings.AUTHORIZED_USERS}")
+        
         # Initialize bot application
         self.application = Application.builder().token(self.settings.TELEGRAM_BOT_TOKEN).build()
         self._setup_handlers()
@@ -33,6 +36,7 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("search", self.search_command))
         self.application.add_handler(CommandHandler("downloads", self.downloads_command))
         self.application.add_handler(CommandHandler("status", self.status_command))
+        self.application.add_handler(CommandHandler("debug", self.debug_command))
         
         # Message handlers
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
@@ -43,10 +47,20 @@ class TelegramBot:
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command."""
         user_id = update.effective_user.id
+        username = update.effective_user.username or "Unknown"
+        first_name = update.effective_user.first_name or "Unknown"
+        
+        logger.info(f"[START] User {user_id} (@{username}, {first_name}) requested /start command")
         
         if not self._is_authorized_user(user_id):
+            logger.warning(f"[AUTH] User {user_id} (@{username}) is NOT authorized. Authorized users: {self.settings.AUTHORIZED_USERS}")
             await update.message.reply_text("❌ You are not authorized to use this bot.")
             return
+        
+        logger.info(f"[AUTH] User {user_id} (@{username}) is authorized")
+        
+        # Create or update user session
+        self.database.create_user_session(user_id, 'idle')
         
         keyboard = [
             [InlineKeyboardButton("🎬 Search Movies", callback_data="search_movies")],
@@ -66,7 +80,13 @@ class TelegramBot:
     
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command."""
-        if not self._is_authorized_user(update.effective_user.id):
+        user_id = update.effective_user.id
+        username = update.effective_user.username or "Unknown"
+        
+        logger.info(f"[HELP] User {user_id} (@{username}) requested /help command")
+        
+        if not self._is_authorized_user(user_id):
+            logger.warning(f"[AUTH] User {user_id} (@{username}) is NOT authorized for /help")
             return
         
         help_text = """
@@ -98,7 +118,13 @@ class TelegramBot:
     
     async def search_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /search command."""
-        if not self._is_authorized_user(update.effective_user.id):
+        user_id = update.effective_user.id
+        username = update.effective_user.username or "Unknown"
+        
+        logger.info(f"[SEARCH] User {user_id} (@{username}) requested /search command")
+        
+        if not self._is_authorized_user(user_id):
+            logger.warning(f"[AUTH] User {user_id} (@{username}) is NOT authorized for /search")
             return
         
         keyboard = [
@@ -115,37 +141,92 @@ class TelegramBot:
     
     async def downloads_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /downloads command."""
-        if not self._is_authorized_user(update.effective_user.id):
+        user_id = update.effective_user.id
+        username = update.effective_user.username or "Unknown"
+        
+        logger.info(f"[DOWNLOADS] User {user_id} (@{username}) requested /downloads command")
+        
+        if not self._is_authorized_user(user_id):
+            logger.warning(f"[AUTH] User {user_id} (@{username}) is NOT authorized for /downloads")
             return
         
         await self._show_downloads(update, context)
     
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command."""
-        if not self._is_authorized_user(update.effective_user.id):
+        user_id = update.effective_user.id
+        username = update.effective_user.username or "Unknown"
+        
+        logger.info(f"[STATUS] User {user_id} (@{username}) requested /status command")
+        
+        if not self._is_authorized_user(user_id):
+            logger.warning(f"[AUTH] User {user_id} (@{username}) is NOT authorized for /status")
             return
         
         await self._show_download_status(update, context)
     
+    async def debug_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /debug command for troubleshooting."""
+        user_id = update.effective_user.id
+        username = update.effective_user.username or "Unknown"
+        first_name = update.effective_user.first_name or "Unknown"
+        last_name = update.effective_user.last_name or ""
+        
+        logger.info(f"[DEBUG] User {user_id} (@{username}) requested /debug command")
+        
+        # Always allow debug command for troubleshooting
+        debug_info = f"""
+🔍 **Debug Information**
+
+👤 **User Details:**
+• User ID: `{user_id}`
+• Username: @{username}
+• Name: {first_name} {last_name}
+
+🔐 **Authorization:**
+• Is Authorized: {'✅ Yes' if self._is_authorized_user(user_id) else '❌ No'}
+• Authorized Users: `{self.settings.AUTHORIZED_USERS}`
+• Total Authorized: {len(self.settings.AUTHORIZED_USERS)}
+
+⚙️ **Bot Configuration:**
+• Bot Token: {'✅ Set' if self.settings.TELEGRAM_BOT_TOKEN else '❌ Missing'}
+• Prowlarr API: {'✅ Set' if self.settings.PROWLARR_API_KEY else '❌ Missing'}
+• TMDB API: {'✅ Set' if self.settings.TMDB_API_KEY else '❌ Missing'}
+
+📊 **Session Data:**
+• User Session: {'✅ Active' if self.database.get_user_session(user_id) else '❌ None'}
+• Context Data Keys: {list(context.user_data.keys()) if context.user_data else 'None'}
+        """
+        
+        await update.message.reply_text(debug_info, parse_mode='Markdown')
+    
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle text messages."""
         user_id = update.effective_user.id
+        username = update.effective_user.username or "Unknown"
+        message_text = update.message.text
+        
+        logger.info(f"[MESSAGE] User {user_id} (@{username}) sent message: '{message_text[:50]}{'...' if len(message_text) > 50 else ''}'")
         
         if not self._is_authorized_user(user_id):
+            logger.warning(f"[AUTH] User {user_id} (@{username}) is NOT authorized for message handling")
             return
         
         # Check if user is in future search mode
         future_search_type = context.user_data.get('future_search_type')
         if future_search_type:
+            logger.info(f"[FUTURE_SEARCH] User {user_id} (@{username}) in future search mode: {future_search_type}")
             await self._handle_future_search_query(update, context)
             return
         
         user_session = self.database.get_user_session(user_id)
         if not user_session:
+            logger.info(f"[SESSION] User {user_id} (@{username}) has no active session, redirecting to /start")
             await update.message.reply_text("Please use /start to begin.")
             return
         
         current_state = user_session['current_state']
+        logger.info(f"[SESSION] User {user_id} (@{username}) current state: {current_state}")
         
         if current_state == 'waiting_for_search_query':
             await self._handle_search_query(update, context)
@@ -158,7 +239,13 @@ class TelegramBot:
         await query.answer()
         
         user_id = query.from_user.id
+        username = query.from_user.username or "Unknown"
+        callback_data = query.data
+        
+        logger.info(f"[CALLBACK] User {user_id} (@{username}) clicked callback: {callback_data}")
+        
         if not self._is_authorized_user(user_id):
+            logger.warning(f"[AUTH] User {user_id} (@{username}) is NOT authorized for callback: {callback_data}")
             await query.edit_message_text("❌ You are not authorized to use this bot.")
             return
         
@@ -193,8 +280,16 @@ class TelegramBot:
     
     async def _handle_search_type(self, query, data, context):
         """Handle search type selection."""
+        user_id = query.from_user.id
+        username = query.from_user.username or "Unknown"
         search_type = data.split("_", 1)[1]  # movies, tv_episodes, or tv_boxsets
+        
+        logger.info(f"[SEARCH_TYPE] User {user_id} (@{username}) selected search type: {search_type}")
+        
         context.user_data['search_type'] = search_type
+        
+        # Update user session to waiting for search query
+        self.database.update_user_session(user_id, 'waiting_for_search_query')
         
         prompt = {
             'movies': 'movie',
@@ -208,9 +303,13 @@ class TelegramBot:
     
     async def _handle_search_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
+        username = update.effective_user.username or "Unknown"
         user_session = self.database.get_user_session(user_id)
         search_type = context.user_data.get('search_type', 'movies')
         query_text = update.message.text
+        
+        logger.info(f"[SEARCH_QUERY] User {user_id} (@{username}) searching for '{query_text}' with type '{search_type}'")
+        
         await update.message.reply_text(f"🔍 Searching for '{query_text}'...")
         try:
             # Perform search
@@ -222,23 +321,32 @@ class TelegramBot:
                 results = self.prowlarr_client.search_tv_boxsets(query_text, page=0)
             else:
                 results = self.prowlarr_client.search_movies(query_text, page=0)
+            
             if not results or not results.get('torrents'):
+                logger.info(f"[SEARCH_RESULTS] User {user_id} (@{username}) - No results found for '{query_text}'")
                 await update.message.reply_text(
                     f"❌ No results found for '{query_text}'.\nTry a different search term."
                 )
                 return
+            
+            logger.info(f"[SEARCH_RESULTS] User {user_id} (@{username}) - Found {len(results.get('torrents', []))} results for '{query_text}'")
+            
             context.user_data['search_results'] = results
             context.user_data['search_query'] = query_text
             context.user_data['search_type'] = search_type
             await self._display_search_results(update.message, results, 0, context)
         except Exception as e:
-            logger.error(f"Error during search: {e}")
+            logger.error(f"[SEARCH_ERROR] User {user_id} (@{username}) - Error during search: {e}")
             await update.message.reply_text(f"❌ Error during search: {str(e)}")
     
     async def _handle_future_search_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle future search queries for movies and TV shows."""
+        user_id = update.effective_user.id
+        username = update.effective_user.username or "Unknown"
         query_text = update.message.text
         future_search_type = context.user_data.get('future_search_type')
+        
+        logger.info(f"[FUTURE_SEARCH_QUERY] User {user_id} (@{username}) searching for '{query_text}' with type '{future_search_type}'")
         
         await update.message.reply_text(f"🔍 Searching for '{query_text}'...")
         
@@ -246,10 +354,13 @@ class TelegramBot:
             if future_search_type == 'movie':
                 results = self.tmdb_client.search_movie(query_text)
                 if not results:
+                    logger.info(f"[FUTURE_SEARCH_RESULTS] User {user_id} (@{username}) - No movies found for '{query_text}'")
                     await update.message.reply_text(
                         f"❌ No movies found for '{query_text}'.\nTry a different search term."
                     )
                     return
+                
+                logger.info(f"[FUTURE_SEARCH_RESULTS] User {user_id} (@{username}) - Found {len(results)} movies for '{query_text}'")
                 
                 # Show movie results with quality selection
                 text = f"🎬 **Movies Found for '{query_text}'**\n\n"
@@ -279,10 +390,13 @@ class TelegramBot:
             elif future_search_type == 'tv':
                 results = self.tmdb_client.search_tv_show(query_text)
                 if not results:
+                    logger.info(f"[FUTURE_SEARCH_RESULTS] User {user_id} (@{username}) - No TV shows found for '{query_text}'")
                     await update.message.reply_text(
                         f"❌ No TV shows found for '{query_text}'.\nTry a different search term."
                     )
                     return
+                
+                logger.info(f"[FUTURE_SEARCH_RESULTS] User {user_id} (@{username}) - Found {len(results)} TV shows for '{query_text}'")
                 
                 # Get detailed info for each result and filter for shows in production
                 text = f"📺 **TV Shows in Production for '{query_text}'**\n\n"
@@ -354,7 +468,7 @@ class TelegramBot:
             context.user_data.pop('future_search_type', None)
             
         except Exception as e:
-            logger.error(f"Error during future search: {e}")
+            logger.error(f"[FUTURE_SEARCH_ERROR] User {user_id} (@{username}) - Error during future search: {e}")
             await update.message.reply_text(f"❌ Error during search: {str(e)}")
     
     async def _display_search_results(self, message, results, page, context=None):
@@ -594,7 +708,9 @@ class TelegramBot:
     
     def _is_authorized_user(self, user_id: int) -> bool:
         """Check if user is authorized."""
-        return user_id in self.settings.AUTHORIZED_USERS
+        is_authorized = user_id in self.settings.AUTHORIZED_USERS
+        logger.debug(f"[AUTH_CHECK] User {user_id} authorization: {is_authorized} (Authorized users: {self.settings.AUTHORIZED_USERS})")
+        return is_authorized
     
     def _format_speed(self, speed_bytes: int) -> str:
         """Format speed in bytes to human readable format."""
