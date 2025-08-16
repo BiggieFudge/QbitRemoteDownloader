@@ -5,19 +5,22 @@ A private Telegram bot that allows authorized users to search for movies and TV 
 ## Features
 
 - 🔐 **Private Access**: Only authorized users can access the bot
-- 🎬 **Movie & TV Show Search**: Search TorrentLeech for content
+- 🎬 **Movie & TV Show Search**: Search for content using Prowlarr
 - 🆓 **Freeleech Only**: Automatically filters for freeleech torrents
-- 📁 **Organized Downloads**: Movies go to `E:\Movies\{Title}`, TV shows to `E:\TVShows\{Title}`
-- ⚡ **qBittorrent Integration**: Direct magnet link downloads
+- 📁 **Organized Downloads**: Movies go to `E:\Movies\{Title (Year)}`, TV shows to `E:\TVShows\{Title}`
+- ⚡ **qBittorrent Integration**: Direct magnet link downloads with improved search
 - 📱 **Telegram Notifications**: Get notified when downloads complete
-- 📊 **Download Status**: Monitor active downloads and progress
+- 🔮 **Future Downloads**: Set up auto-download rules for upcoming content
+- 📺 **Smart TV Rules**: Configure season-specific download rules
+- 🎬 **Movie Rules**: Auto-download movies when they become available
 - 🔄 **Pagination**: Browse through search results easily
 
 ## Prerequisites
 
 - Python 3.8 or higher
 - qBittorrent with Web UI enabled
-- TorrentLeech account with API access
+- Prowlarr instance with TorrentLeech indexer configured
+- TMDB API key for movie/TV show information
 - Telegram Bot Token
 
 ## Installation
@@ -47,8 +50,12 @@ A private Telegram bot that allows authorized users to search for movies and TV 
    # Telegram Bot Configuration
    TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
    
-   # TorrentLeech Configuration
-   TORRENTLEECH_API_TOKEN=your_torrentleech_api_token_here
+   # Prowlarr Configuration
+   PROWLARR_API_KEY=your_prowlarr_api_key_here
+   PROWLARR_BASE_URL=http://localhost:9696
+   
+   # TMDB Configuration
+   TMDB_API_KEY=your_tmdb_api_key_here
    
    # qBittorrent Configuration
    QBITTORRENT_HOST=localhost
@@ -107,7 +114,6 @@ python main.py
 - `/start` - Start the bot and show main menu
 - `/search` - Search for movies or TV shows
 - `/downloads` - View your download history
-- `/status` - Check current download status
 - `/help` - Show help information
 
 ### Using the Bot
@@ -132,8 +138,13 @@ QbitRemoteDownloader/
 ├── services/
 │   ├── __init__.py
 │   ├── telegram_bot.py      # Main bot logic
-│   ├── torrentleech_client.py # TorrentLeech API client
+│   ├── prowlarr_client.py   # Prowlarr API client
+│   ├── tmdb_client.py       # TMDB API client
 │   └── qbittorrent_client.py # qBittorrent API client
+├── tests/                   # Test files
+│   ├── __init__.py
+│   ├── README.md
+│   └── test_basic.py        # Basic functionality tests
 ├── utils/
 │   ├── __init__.py
 │   └── helpers.py           # Utility functions
@@ -149,7 +160,9 @@ QbitRemoteDownloader/
 | Variable | Description | Required |
 |----------|-------------|----------|
 | `TELEGRAM_BOT_TOKEN` | Your Telegram bot token | Yes |
-| `TORRENTLEECH_API_TOKEN` | Your TorrentLeech API token | Yes |
+| `PROWLARR_API_KEY` | Your Prowlarr API key | Yes |
+| `PROWLARR_BASE_URL` | Prowlarr instance URL | No (default: http://localhost:9696) |
+| `TMDB_API_KEY` | Your TMDB API key | Yes |
 | `QBITTORRENT_HOST` | qBittorrent Web UI host | No (default: localhost) |
 | `QBITTORRENT_PORT` | qBittorrent Web UI port | No (default: 8080) |
 | `QBITTORRENT_USERNAME` | qBittorrent Web UI username | No (default: admin) |
@@ -168,6 +181,28 @@ To add more authorized users:
    AUTHORIZED_USERS=123456789,987654321,555666777
    ```
 
+## Recent Improvements
+
+### Version 2.0 Updates
+
+- **Improved Search Logic**: Better torrent name matching with space-to-dot conversion
+- **Enhanced Path Organization**: 
+  - Movies: `E:\Movies\Movie Name (2024)\`
+  - TV Shows: `E:\TVShows\Show Name\`
+- **Future Downloads**: Set up auto-download rules for upcoming content
+- **TV Show Rules**: Configure season-specific download rules with user input
+- **Rule Duplication Check**: Prevents creating duplicate auto-download rules
+- **Removed Download Status**: Simplified interface by removing non-functional status feature
+- **Test Organization**: Moved all tests to dedicated `tests/` directory
+
+### Search Improvements
+
+The bot now uses improved search logic that:
+- Replaces spaces with dots (common in torrent names)
+- Handles multiple search patterns for better matching
+- Focuses on show/movie names and season/episode information
+- Provides more accurate torrent identification
+
 ## Troubleshooting
 
 ### Common Issues
@@ -182,8 +217,9 @@ To add more authorized users:
    - Verify username/password in `.env` file
 
 3. **"No results found"**
-   - Check your TorrentLeech API token
-   - Verify your TorrentLeech account has access
+   - Check your Prowlarr API key
+   - Verify your Prowlarr instance is running
+   - Ensure TorrentLeech indexer is configured in Prowlarr
    - Try different search terms
 
 4. **"Failed to add torrent to qBittorrent"**

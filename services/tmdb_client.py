@@ -171,6 +171,34 @@ class TMDBClient:
             logger.debug(f"[TMDB] Movie '{movie_data.get('title', 'Unknown')}' has invalid release date: {release_date}")
             return False
     
+    def is_recently_released_movie(self, movie_data: Dict, days_threshold: int = 60) -> bool:
+        """
+        Check if a movie was released within the specified number of days.
+        
+        Args:
+            movie_data: Movie data from TMDB API
+            days_threshold: Number of days to consider "recent" (default: 60 days = 2 months)
+        
+        Returns:
+            True if movie was released within the threshold, False otherwise
+        """
+        release_date = movie_data.get('release_date')
+        if not release_date:
+            logger.debug(f"[TMDB] Movie '{movie_data.get('title', 'Unknown')}' has no release date")
+            return False
+        
+        try:
+            release_dt = datetime.strptime(release_date, '%Y-%m-%d')
+            today = datetime.now()
+            cutoff_date = today - timedelta(days=days_threshold)
+            
+            is_recent = release_dt >= cutoff_date
+            logger.debug(f"[TMDB] Movie '{movie_data.get('title', 'Unknown')}' release date: {release_date}, is recent (within {days_threshold} days): {is_recent}")
+            return is_recent
+        except:
+            logger.debug(f"[TMDB] Movie '{movie_data.get('title', 'Unknown')}' has invalid release date: {release_date}")
+            return False
+    
     def is_upcoming_tv_show(self, tv_data: Dict) -> bool:
         """Check if a TV show has upcoming episodes or is still airing."""
         # Check if show is still airing

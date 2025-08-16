@@ -10,11 +10,7 @@ import sys
 import os
 import logging
 from pathlib import Path
-with open("C:\\Users\\eytan\\env_debug.txt", "w") as f:
-    f.write("sys.executable: " + sys.executable + "\n")
-    f.write("sys.path:\n" + "\n".join(sys.path) + "\n")
-    f.write("ENVIRONMENT:\n")
-    f.write("\n".join([f"{k}={v}" for k, v in os.environ.items()]))
+
 # Add project root to Python path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))

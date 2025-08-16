@@ -1,7 +1,7 @@
 import sqlite3
 import logging
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +84,8 @@ class Database:
         except Exception as e:
             logger.error(f"Error updating download status: {e}")
     
-    def get_user_downloads(self, user_id: int) -> List[Dict]:
-        """Get all downloads for a user."""
+    def get_user_downloads(self, user_id: int, hours: int = 24) -> List[Dict]:
+        """Get downloads for a user from the last N hours (default: 24 hours)."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -93,8 +93,9 @@ class Database:
                     SELECT id, title, torrent_id, status, created_at, completed_at
                     FROM downloads 
                     WHERE user_id = ?
+                    AND created_at >= datetime('now', '-{} hours')
                     ORDER BY created_at DESC
-                ''', (user_id,))
+                '''.format(hours), (user_id,))
                 return cursor.fetchall()
         except Exception as e:
             logger.error(f"Error getting user downloads: {e}")
@@ -169,3 +170,83 @@ class Database:
                 logger.info(f"[DB] Cleared session for user {user_id}")
         except Exception as e:
             logger.error(f"Error clearing user session: {e}") 
+
+    def cleanup_old_downloads(self, hours: int = 24) -> int:
+        """Clean up downloads older than N hours (default: 24 hours). Returns number of deleted records."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    DELETE FROM downloads 
+                    WHERE created_at < datetime('now', '-{} hours')
+                '''.format(hours))
+                deleted_count = cursor.rowcount
+                conn.commit()
+                logger.info(f"[DB] Cleaned up {deleted_count} downloads older than {hours} hours")
+                return deleted_count
+        except Exception as e:
+            logger.error(f"Error cleaning up old downloads: {e}")
+            return 0
+    
+    def get_download_statistics(self, user_id: int, hours: int = 24) -> Dict:
+        """Get download statistics for a user from the last N hours."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Get total downloads in time period
+                cursor.execute('''
+                    SELECT COUNT(*) FROM downloads 
+                    WHERE user_id = ? 
+                    AND created_at >= datetime('now', '-{} hours')
+                '''.format(hours), (user_id,))
+                total_downloads = cursor.fetchone()[0]
+                
+                # Get completed downloads
+                cursor.execute('''
+                    SELECT COUNT(*) FROM downloads 
+                    WHERE user_id = ? 
+                    AND status = 'completed'
+                    AND created_at >= datetime('now', '-{} hours')
+                '''.format(hours), (user_id,))
+                completed_downloads = cursor.fetchone()[0]
+                
+                # Get downloading count
+                cursor.execute('''
+                    SELECT COUNT(*) FROM downloads 
+                    WHERE user_id = ? 
+                    AND status = 'downloading'
+                    AND created_at >= datetime('now', '-{} hours')
+                '''.format(hours), (user_id,))
+                downloading_count = cursor.fetchone()[0]
+                
+                return {
+                    'total_downloads': total_downloads,
+                    'completed_downloads': completed_downloads,
+                    'downloading_count': downloading_count,
+                    'time_period_hours': hours
+                }
+        except Exception as e:
+            logger.error(f"Error getting download statistics: {e}")
+            return {
+                'total_downloads': 0,
+                'completed_downloads': 0,
+                'downloading_count': 0,
+                'time_period_hours': hours
+            }
+    
+    def get_all_downloads_older_than(self, hours: int) -> List[Tuple]:
+        """Get all downloads older than N hours (for cleanup purposes)."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT id, user_id, title, created_at
+                    FROM downloads 
+                    WHERE created_at < datetime('now', '-{} hours')
+                    ORDER BY created_at ASC
+                '''.format(hours))
+                return cursor.fetchall()
+        except Exception as e:
+            logger.error(f"Error getting old downloads: {e}")
+            return [] 

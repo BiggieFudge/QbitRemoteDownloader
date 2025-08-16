@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from typing import Dict, List, Optional
@@ -35,8 +36,9 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("search", self.search_command))
         self.application.add_handler(CommandHandler("downloads", self.downloads_command))
-        self.application.add_handler(CommandHandler("status", self.status_command))
+
         self.application.add_handler(CommandHandler("debug", self.debug_command))
+        self.application.add_handler(CommandHandler("cleanup", self.cleanup_command))
         
         # Message handlers
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
@@ -67,8 +69,7 @@ class TelegramBot:
             [InlineKeyboardButton("📺 Search TV Show Episodes", callback_data="search_tv_episodes")],
             [InlineKeyboardButton("📦 Search TV Show Boxsets", callback_data="search_tv_boxsets")],
             [InlineKeyboardButton("🔮 Future Downloads", callback_data="future_downloads")],
-            [InlineKeyboardButton("📥 My Downloads", callback_data="my_downloads")],
-            [InlineKeyboardButton("📊 Download Status", callback_data="download_status")]
+            [InlineKeyboardButton("📥 My Downloads", callback_data="my_downloads")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -96,7 +97,6 @@ class TelegramBot:
 • `/start` - Start the bot
 • `/search` - Search for content
 • `/downloads` - View your downloads
-• `/status` - Check download status
 • `/help` - Show this help
 
 **Features:**
@@ -152,18 +152,7 @@ class TelegramBot:
         
         await self._show_downloads(update, context)
     
-    async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /status command."""
-        user_id = update.effective_user.id
-        username = update.effective_user.username or "Unknown"
-        
-        logger.info(f"[STATUS] User {user_id} (@{username}) requested /status command")
-        
-        if not self._is_authorized_user(user_id):
-            logger.warning(f"[AUTH] User {user_id} (@{username}) is NOT authorized for /status")
-            return
-        
-        await self._show_download_status(update, context)
+
     
     async def debug_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /debug command for troubleshooting."""
@@ -200,6 +189,42 @@ class TelegramBot:
         
         await update.message.reply_text(debug_info, parse_mode='Markdown')
     
+    async def cleanup_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /cleanup command for database maintenance."""
+        user_id = update.effective_user.id
+        username = update.effective_user.username or "Unknown"
+        
+        logger.info(f"[CLEANUP] User {user_id} (@{username}) requested /cleanup command")
+        
+        if not self._is_authorized_user(user_id):
+            logger.warning(f"[AUTH] User {user_id} (@{username}) is NOT authorized for /cleanup")
+            return
+        
+        # Get count of old downloads before cleanup
+        old_downloads = self.database.get_all_downloads_older_than(24)
+        old_count = len(old_downloads)
+        
+        # Perform cleanup
+        deleted_count = self.database.cleanup_old_downloads(hours=24)
+        
+        cleanup_info = f"""
+🧹 **Database Cleanup Completed!**
+
+📊 **Cleanup Results:**
+• Old downloads found: {old_count}
+• Downloads deleted: {deleted_count}
+• Time period: Last 24 hours
+
+💾 **Database Status:**
+• Only recent downloads (last 24h) are kept
+• Old completed downloads are automatically removed
+• This helps keep the database clean and fast
+
+🔄 **Next cleanup:** Automatic cleanup runs daily
+        """
+        
+        await update.message.reply_text(cleanup_info, parse_mode='Markdown')
+    
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle text messages."""
         user_id = update.effective_user.id
@@ -217,6 +242,12 @@ class TelegramBot:
         if future_search_type:
             logger.info(f"[FUTURE_SEARCH] User {user_id} (@{username}) in future search mode: {future_search_type}")
             await self._handle_future_search_query(update, context)
+            return
+        
+        # Check if user is waiting for season input
+        if context.user_data.get('waiting_for_season'):
+            logger.info(f"[SEASON_INPUT] User {user_id} (@{username}) entering season number")
+            await self._handle_season_input(update, context)
             return
         
         user_session = self.database.get_user_session(user_id)
@@ -265,8 +296,7 @@ class TelegramBot:
             await self._handle_search_results(query, data, context=context)
         elif data == "my_downloads":
             await self._show_downloads(query, context)
-        elif data == "download_status":
-            await self._show_download_status(query, context)
+
         elif data == "back_to_main":
             await self._show_main_menu(query)
         elif data == "future_downloads":
@@ -275,6 +305,9 @@ class TelegramBot:
             await self._handle_future_downloads(query, data, context)
         elif data.startswith("create_rule_"):
             await self._handle_create_rule(query, data, context)
+        elif data.startswith("replace_rule_"):
+            await self._handle_replace_rule(query, data, context)
+
         else:
             await query.edit_message_text("❌ Unknown action.")
     
@@ -366,21 +399,29 @@ class TelegramBot:
                 text = f"🎬 **Movies Found for '{query_text}'**\n\n"
                 keyboard = []
                 
-                for i, movie in enumerate(results[:5]):  # Show first 5 results
-                    title = movie.get('title', 'Unknown')
-                    release_date = movie.get('release_date', 'Unknown')
-                    movie_id = movie.get('id')
-                    is_upcoming = self.tmdb_client.is_upcoming_movie(movie)
-                    
-                    text += f"🎬 **{title}**\n"
-                    text += f"📅 Release: {release_date}\n"
-                    text += f"🔮 Status: {'🟡 Upcoming' if is_upcoming else '🟢 Released'}\n\n"
-                    
-                    # Add quality selection buttons for all movies (not just upcoming)
-                    keyboard.append([
-                        InlineKeyboardButton(f"1080p", callback_data=f"create_rule_movie_{movie_id}_1080p"),
-                        InlineKeyboardButton(f"2160p", callback_data=f"create_rule_movie_{movie_id}_2160p")
-                    ])
+                # Filter movies to only show those released within the last 2 months
+                filtered_movies = [movie for movie in results if self.tmdb_client.is_recently_released_movie(movie, days_threshold=60)]
+                
+                if not filtered_movies:
+                    text += "❌ **No recently released movies found**\n"
+                    text += "Only movies released within the last 2 months are shown.\n"
+                    text += "Try searching for a different movie or check back later."
+                else:
+                    for i, movie in enumerate(filtered_movies[:5]):  # Show first 5 filtered results
+                        title = movie.get('title', 'Unknown')
+                        release_date = movie.get('release_date', 'Unknown')
+                        movie_id = movie.get('id')
+                        is_upcoming = self.tmdb_client.is_upcoming_movie(movie)
+                        
+                        text += f"🎬 **{title}**\n"
+                        text += f"📅 Release: {release_date}\n"
+                        text += f"🔮 Status: {'🟡 Upcoming' if is_upcoming else '🟢 Released'}\n\n"
+                        
+                        # Add quality selection buttons for filtered movies
+                        keyboard.append([
+                            InlineKeyboardButton(f"1080p", callback_data=f"create_rule_movie_{movie_id}_1080p"),
+                            InlineKeyboardButton(f"2160p", callback_data=f"create_rule_movie_{movie_id}_2160p")
+                        ])
                 
                 keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="future_movies")])
                 reply_markup = InlineKeyboardMarkup(keyboard)
@@ -606,9 +647,17 @@ class TelegramBot:
             await query.edit_message_text("❌ Failed to get magnet link for this torrent.")
             return
         search_type = context.user_data.get('search_type', 'movies') if context is not None else 'movies'
+        
+        # Determine content type and extract year for movies
+        content_type = 'movie' if search_type == 'movies' else 'tv'
+        year = None
+        if content_type == 'movie' and torrent.get('year'):
+            year = torrent['year']
+        
         download_path = self.qbittorrent_client.get_download_path(
-            'movie' if search_type == 'movies' else 'tv',
-            torrent['name']
+            content_type,
+            torrent['name'],
+            year=year
         )
         # Add to qBittorrent
         torrent_hash = self.qbittorrent_client.add_magnet_link(
@@ -641,12 +690,25 @@ class TelegramBot:
         """Show user's downloads."""
         user_id = update.effective_user.id if hasattr(update, 'effective_user') else update.from_user.id
         
-        downloads = self.database.get_user_downloads(user_id)
+        # Get downloads from last 24 hours and statistics
+        downloads = self.database.get_user_downloads(user_id, hours=24)
+        stats = self.database.get_download_statistics(user_id, hours=24)
         
         if not downloads:
-            text = "📥 You have no downloads yet."
+            text = "📥 **Your Downloads (Last 24 Hours)**\n\n"
+            text += "❌ No downloads in the last 24 hours.\n\n"
+            text += f"📊 **Statistics:**\n"
+            text += f"• Total Downloads: {stats['total_downloads']}\n"
+            text += f"• Completed: {stats['completed_downloads']}\n"
+            text += f"• In Progress: {stats['downloading_count']}\n"
         else:
-            text = "📥 **Your Downloads:**\n\n"
+            text = "📥 **Your Downloads (Last 24 Hours)**\n\n"
+            text += f"📊 **Statistics:**\n"
+            text += f"• Total Downloads: {stats['total_downloads']}\n"
+            text += f"• Completed: {stats['completed_downloads']}\n"
+            text += f"• In Progress: {stats['downloading_count']}\n\n"
+            text += "📋 **Recent Downloads:**\n\n"
+            
             for download in downloads[:10]:  # Show last 10 downloads
                 status_emoji = "✅" if download[3] == 'completed' else "⏳"
                 text += f"{status_emoji} **{download[1]}**\n"
@@ -661,32 +723,7 @@ class TelegramBot:
         else:
             await update.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
     
-    async def _show_download_status(self, update, context):
-        """Show current download status."""
-        stats = self.qbittorrent_client.get_download_stats()
-        all_torrents = self.qbittorrent_client.get_all_torrents()
-        
-        active_downloads = [t for t in all_torrents if t['state'] in ['downloading', 'queued']]
-        completed_downloads = [t for t in all_torrents if t['progress'] == 1.0]
-        
-        text = "📊 **Download Status:**\n\n"
-        text += f"⬇️ **Active Downloads:** {len(active_downloads)}\n"
-        text += f"✅ **Completed:** {len(completed_downloads)}\n"
-        text += f"📈 **Total Speed:** {self._format_speed(stats.get('total_download_speed', 0))}\n\n"
-        
-        if active_downloads:
-            text += "**Active Downloads:**\n"
-            for torrent in active_downloads[:5]:  # Show top 5
-                progress = torrent['progress'] * 100
-                text += f"⏳ {torrent['name'][:50]}... ({progress:.1f}%)\n"
-        
-        keyboard = [[InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back_to_main")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        if hasattr(update, 'edit_message_text'):
-            await update.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
-        else:
-            await update.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+
     
     async def _show_main_menu(self, query):
         """Show main menu."""
@@ -695,8 +732,7 @@ class TelegramBot:
             [InlineKeyboardButton("📺 Search TV Show Episodes", callback_data="search_tv_episodes")],
             [InlineKeyboardButton("📦 Search TV Show Boxsets", callback_data="search_tv_boxsets")],
             [InlineKeyboardButton("🔮 Future Downloads", callback_data="future_downloads")],
-            [InlineKeyboardButton("📥 My Downloads", callback_data="my_downloads")],
-            [InlineKeyboardButton("📊 Download Status", callback_data="download_status")]
+            [InlineKeyboardButton("📥 My Downloads", callback_data="my_downloads")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -731,10 +767,10 @@ class TelegramBot:
         while True:
             try:
                 logger.info("[Checker] Checking for completed downloads...")
-                # Get all downloads from database
+                # Get all downloads from database (last 24 hours only)
                 all_downloads = []
                 for user_id in self.settings.AUTHORIZED_USERS:
-                    downloads = self.database.get_user_downloads(user_id)
+                    downloads = self.database.get_user_downloads(user_id, hours=24)
                     all_downloads.extend([(user_id, download) for download in downloads])
                 # Check each download
                 for user_id, download in all_downloads:
@@ -749,13 +785,20 @@ class TelegramBot:
                             torrent_hash = v
                             break
                     if not torrent_hash:
-                        # Try to get hash from qBittorrent by matching name (substring, normalized)
-                        search_normalized = title.replace(' ', '.').lower()
-                        for t in self.qbittorrent_client.get_all_torrents():
-                            torrent_name = t['name'].lower()
-                            if search_normalized in torrent_name:
-                                torrent_hash = t['hash']
-                                break
+                        # Try to get hash from qBittorrent using improved search method
+                        # Get the magnet link from the database if available
+                        magnet_link = None
+                        try:
+                            # Try to get magnet link from database
+                            download_details = self.database.get_download_by_id(download_id)
+                            if download_details and len(download_details) > 4:
+                                magnet_link = download_details[4]  # magnet_link field
+                        except Exception as e:
+                            logger.debug(f"Could not get magnet link from database: {e}")
+                        
+                        torrent_info = self.qbittorrent_client.find_torrent_by_name(title, magnet_link=magnet_link)
+                        if torrent_info:
+                            torrent_hash = torrent_info['hash']
                     if not torrent_hash:
                         logger.info(f"[Checker] No hash found for download {download_id} ({title})")
                         continue
@@ -857,10 +900,89 @@ class TelegramBot:
                 text = "📋 **Auto-Download Rules**\n\nNo rules configured yet."
             else:
                 text = "📋 **Auto-Download Rules**\n\n"
-                for rule in rules[:10]:  # Show first 10 rules
-                    rule_name = rule.get('ruleName', 'Unknown')
-                    enabled = "✅" if rule.get('enabled', False) else "❌"
-                    text += f"{enabled} **{rule_name}**\n"
+                
+                # Convert rules to list if it's not already, and handle slicing safely
+                if isinstance(rules, (list, tuple)):
+                    rules_to_show = rules[:10]  # Show first 10 rules
+                else:
+                    # If rules is not a list/tuple, try to convert it
+                    try:
+                        rules_list = list(rules) if hasattr(rules, '__iter__') else [rules]
+                        rules_to_show = rules_list[:10]
+                    except Exception as convert_error:
+                        logger.warning(f"Could not convert rules to list: {convert_error}")
+                        rules_to_show = [rules] if rules else []
+                
+                # Process each rule safely
+                for i, rule in enumerate(rules_to_show):
+                    try:
+                        if isinstance(rule, dict):
+                            rule_name = rule.get('ruleName', rule.get('name', f'Rule {i+1}'))
+                            enabled = "✅" if rule.get('enabled', False) else "❌"
+                        elif hasattr(rule, 'ruleName'):
+                            rule_name = rule.ruleName
+                            enabled = "✅" if getattr(rule, 'enabled', False) else "❌"
+                        elif hasattr(rule, 'name'):
+                            rule_name = rule.name
+                            enabled = "✅" if getattr(rule, 'enabled', False) else "❌"
+                        else:
+                            rule_name = str(rule)
+                            enabled = "❓"
+                        
+                        # Clean up the rule name for better display
+                        clean_rule_name = rule_name.replace('Auto', '').replace('_', ' ').strip()
+                        
+                        # Extract quality, season, and other metadata
+                        quality = None
+                        season = None
+                        is_upcoming = False
+                        
+                        # Check for quality
+                        if '1080p' in clean_rule_name:
+                            quality = '1080p'
+                            clean_rule_name = clean_rule_name.replace('1080p', '').strip()
+                        elif '2160p' in clean_rule_name:
+                            quality = '2160p'
+                            clean_rule_name = clean_rule_name.replace('2160p', '').strip()
+                        
+                        # Check for season
+                        season_match = re.search(r'S(\d+)', clean_rule_name)
+                        if season_match:
+                            season = season_match.group(1)
+                            clean_rule_name = clean_rule_name.replace(f'S{season}', '').strip()
+                        
+                        # Check if it's an upcoming movie
+                        if 'Upcoming' in clean_rule_name:
+                            is_upcoming = True
+                            clean_rule_name = clean_rule_name.replace('Upcoming', '').strip()
+                        
+                        # Clean up any remaining artifacts
+                        clean_rule_name = clean_rule_name.replace('  ', ' ').strip()
+                        
+                        # Determine content type and add appropriate emoji
+                        content_emoji = "🎬"  # Default to movie
+                        content_info = ""
+                        
+                        # Check if it's a TV show (has season info or common TV show indicators)
+                        if season or any(tv_indicator in clean_rule_name.lower() for tv_indicator in ['guy', 'park', 'sunny', 'farm', 'morty']):
+                            content_emoji = "📺"
+                            if season:
+                                content_info = f" (Season {season})"
+                        elif is_upcoming:
+                            content_info = " (Upcoming)"
+                        
+                        # Build the display text
+                        display_text = f"{content_emoji} **{clean_rule_name}**"
+                        if quality:
+                            display_text += f" - {quality}"
+                        if content_info:
+                            display_text += content_info
+                        
+                        # Add proper spacing and formatting
+                        text += f"{enabled} {display_text}\n\n"
+                    except Exception as rule_error:
+                        logger.warning(f"Error processing rule {i}: {rule_error}")
+                        text += f"❓ **Rule {i+1}** (Error processing)\n\n"
             
             keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="future_downloads")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -883,13 +1005,63 @@ class TelegramBot:
                 movie_data = self.tmdb_client.get_movie_details(int(content_id))
                 if movie_data:
                     title = movie_data.get('title', 'Unknown')
-                    success = self.qbittorrent_client.create_movie_rule(title, quality, movie_data=movie_data)
+                    year = movie_data.get('release_date', '')[:4] if movie_data.get('release_date') else None
+                    
+                    # Check if ANY rule already exists for this movie title (regardless of quality)
+                    logger.info(f"[MOVIE_RULE_CHECK] Checking if ANY rule exists for movie: '{title}'")
+                    
+                    if self.qbittorrent_client.rule_exists_by_title(title):
+                        logger.info(f"[MOVIE_RULE_CHECK] ✅ Rule already exists for movie: '{title}'")
+                        
+                        # Get existing rule details
+                        existing_rule = self.qbittorrent_client.get_rule_by_title(title)
+                        existing_rule_name = "Unknown"
+                        if existing_rule:
+                            if hasattr(existing_rule, 'name'):
+                                existing_rule_name = existing_rule.name
+                            elif hasattr(existing_rule, 'ruleName'):
+                                existing_rule_name = existing_rule.ruleName
+                            elif isinstance(existing_rule, dict):
+                                existing_rule_name = existing_rule.get('name') or existing_rule.get('ruleName')
+                        
+                        # Offer to replace the existing rule
+                        keyboard = [
+                            [InlineKeyboardButton("🔄 Replace Existing Rule", callback_data=f"replace_rule_movie_{content_id}_{quality}")],
+                            [InlineKeyboardButton("❌ Cancel", callback_data="future_movies")]
+                        ]
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        
+                        await query.edit_message_text(
+                            f"⚠️ **Rule Already Exists!**\n\n"
+                            f"🎬 **Movie:** {title}\n"
+                            f"📋 **Existing Rule:** {existing_rule_name}\n"
+                            f"ℹ️ An auto-download rule for this movie already exists.\n\n"
+                            f"Would you like to replace the existing rule?",
+                            reply_markup=reply_markup,
+                            parse_mode='Markdown'
+                        )
+                        return
+                    else:
+                        logger.info(f"[MOVIE_RULE_CHECK] ❌ No rule exists for movie: '{title}'")
+                    
+                    # Use upcoming movie rule for movies that are not yet released
+                    if self.tmdb_client.is_upcoming_movie(movie_data):
+                        success = self.qbittorrent_client.create_upcoming_movie_rule(title, quality, movie_data=movie_data)
+                    else:
+                        success = self.qbittorrent_client.create_movie_rule(title, quality, movie_data=movie_data)
+                    
                     if success:
+                        # Show different message for upcoming movies
+                        if self.tmdb_client.is_upcoming_movie(movie_data):
+                            status_text = "Will auto-download when released (ignores duplicates for 365 days)"
+                        else:
+                            status_text = "Will auto-download when available"
+                        
                         await query.edit_message_text(
                             f"✅ **Auto-Download Rule Created!**\n\n"
                             f"🎬 **Movie:** {title}\n"
                             f"📺 **Quality:** {quality}\n"
-                            f"🔮 **Status:** Will auto-download when available",
+                            f"🔮 **Status:** {status_text}",
                             parse_mode='Markdown'
                         )
                     else:
@@ -913,24 +1085,126 @@ class TelegramBot:
                 if found_show:
                     title = found_show.get('name', 'Unknown')
                     status = self.tmdb_client.get_tv_show_status(found_show)
-                    success = self.qbittorrent_client.create_tv_show_rule(title, quality, tv_data=found_show)
-                    if success:
+                    
+                    # Check if ANY rule already exists for this TV show title (regardless of quality or season)
+                    logger.info(f"[TV_RULE_CHECK] Checking if ANY rule exists for TV show: '{title}'")
+                    
+                    if self.qbittorrent_client.rule_exists_by_title(title):
+                        logger.info(f"[TV_RULE_CHECK] ✅ Rule already exists for TV show: '{title}'")
+                        
+                        # Get existing rule details
+                        existing_rule = self.qbittorrent_client.get_rule_by_title(title)
+                        existing_rule_name = "Unknown"
+                        if existing_rule:
+                            if hasattr(existing_rule, 'name'):
+                                existing_rule_name = existing_rule.name
+                            elif hasattr(existing_rule, 'ruleName'):
+                                existing_rule_name = existing_rule.ruleName
+                            elif isinstance(existing_rule, dict):
+                                existing_rule_name = existing_rule.get('name') or existing_rule.get('ruleName')
+                        
+                        # Offer to replace the existing rule
+                        keyboard = [
+                            [InlineKeyboardButton("🔄 Replace Existing Rule", callback_data=f"replace_rule_tv_{content_id}_{quality}")],
+                            [InlineKeyboardButton("❌ Cancel", callback_data="future_tv_shows")]
+                        ]
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        
                         await query.edit_message_text(
-                            f"✅ **Auto-Download Rule Created!**\n\n"
+                            f"⚠️ **Rule Already Exists!**\n\n"
                             f"📺 **TV Show:** {title}\n"
-                            f"🔮 **Status:** {status}\n"
-                            f"📺 **Quality:** {quality}\n"
-                            f"🔮 **Action:** Will auto-download new episodes",
+                            f"📋 **Existing Rule:** {existing_rule_name}\n"
+                            f"ℹ️ An auto-download rule for this TV show already exists.\n\n"
+                            f"Would you like to replace the existing rule?",
+                            reply_markup=reply_markup,
                             parse_mode='Markdown'
                         )
+                        return
                     else:
-                        await query.edit_message_text("❌ Failed to create auto-download rule.")
+                        logger.info(f"[TV_RULE_CHECK] ❌ No rule exists for TV show: '{title}'")
+                    
+                    # Ask user for season number directly
+                    context.user_data['pending_tv_rule'] = {
+                        'title': title,
+                        'quality': quality,
+                        'tv_data': found_show,
+                        'content_id': content_id
+                    }
+                    
+                    await query.edit_message_text(
+                        f"📺 **Create Auto-Download Rule for {title}**\n\n"
+                        f"🔮 **Status:** {status}\n"
+                        f"📺 **Quality:** {quality}\n\n"
+                        f"Enter the season number you want to auto-download:",
+                        parse_mode='Markdown'
+                    )
+                    
+                    # Set up message handler for season input
+                    context.user_data['waiting_for_season'] = True
                 else:
                     await query.edit_message_text("❌ Could not find TV show details.")
             
         except Exception as e:
             logger.error(f"Error creating rule: {e}")
             await query.edit_message_text("❌ Error creating auto-download rule.")
+    
+
+    
+    async def _handle_season_input(self, update, context):
+        """Handle season number input for TV rule creation."""
+        try:
+            season_text = update.message.text.strip()
+            
+            # Validate season input
+            if not season_text.isdigit():
+                await update.message.reply_text(
+                    "❌ Please enter a valid season number (e.g., 1, 2, 3):"
+                )
+                return
+            
+            season = int(season_text)
+            if season < 1:
+                await update.message.reply_text(
+                    "❌ Season number must be 1 or higher. Please try again:"
+                )
+                return
+            
+            pending_rule = context.user_data.get('pending_tv_rule')
+            if not pending_rule:
+                await update.message.reply_text("❌ No pending TV rule found. Please try again.")
+                return
+            
+            title = pending_rule['title']
+            quality = pending_rule['quality']
+            tv_data = pending_rule['tv_data']
+            
+            # Create the rule with specific season
+            success = self.qbittorrent_client.create_tv_show_rule(
+                title, quality, tv_data=tv_data, season=str(season)
+            )
+            
+            if success:
+                await update.message.reply_text(
+                    f"✅ **Auto-Download Rule Created!**\n\n"
+                    f"📺 **TV Show:** {title}\n"
+                    f"📺 **Season:** {season}\n"
+                    f"📺 **Quality:** {quality}\n"
+                    f"🔮 **Action:** Will auto-download Season {season} episodes",
+                    parse_mode='Markdown'
+                )
+            else:
+                await update.message.reply_text("❌ Failed to create auto-download rule.")
+            
+            # Clean up pending rule and season input flag
+            context.user_data.pop('pending_tv_rule', None)
+            context.user_data.pop('waiting_for_season', None)
+            
+        except Exception as e:
+            logger.error(f"Error handling season input: {e}")
+            await update.message.reply_text("❌ Error creating TV rule. Please try again.")
+            # Clean up on error
+            context.user_data.pop('pending_tv_rule', None)
+            context.user_data.pop('waiting_for_season', None)
     
     async def _handle_future_search_movie(self, query, context):
         """Handle future movie search."""
@@ -968,21 +1242,29 @@ class TelegramBot:
             text = "📅 **Upcoming Movies (Next 30 Days)**\n\n"
             keyboard = []
             
-            for i, movie in enumerate(upcoming_movies[:10]):  # Show first 10
-                title = movie.get('title', 'Unknown')
-                release_date = movie.get('release_date', 'Unknown')
-                movie_id = movie.get('id')
-                is_upcoming = self.tmdb_client.is_upcoming_movie(movie)
-                
-                text += f"🎬 **{title}**\n"
-                text += f"📅 Release: {release_date}\n"
-                text += f"🔮 Status: {'🟡 Upcoming' if is_upcoming else '🟢 Released'}\n\n"
-                
-                # Add quality selection buttons for all upcoming movies
-                keyboard.append([
-                    InlineKeyboardButton(f"1080p", callback_data=f"create_rule_movie_{movie_id}_1080p"),
-                    InlineKeyboardButton(f"2160p", callback_data=f"create_rule_movie_{movie_id}_2160p")
-                ])
+            # Filter movies to only show those released within the last 2 months
+            filtered_upcoming = [movie for movie in upcoming_movies if self.tmdb_client.is_recently_released_movie(movie, days_threshold=60)]
+            
+            if not filtered_upcoming:
+                text += "❌ **No recently released movies found**\n"
+                text += "Only movies released within the last 2 months are shown.\n"
+                text += "Try searching for a different movie or check back later."
+            else:
+                for i, movie in enumerate(filtered_upcoming[:10]):  # Show first 10 filtered results
+                    title = movie.get('title', 'Unknown')
+                    release_date = movie.get('release_date', 'Unknown')
+                    movie_id = movie.get('id')
+                    is_upcoming = self.tmdb_client.is_upcoming_movie(movie)
+                    
+                    text += f"🎬 **{title}**\n"
+                    text += f"📅 Release: {release_date}\n"
+                    text += f"🔮 Status: {'🟡 Upcoming' if is_upcoming else '🟢 Released'}\n\n"
+                    
+                    # Add quality selection buttons for filtered upcoming movies
+                    keyboard.append([
+                        InlineKeyboardButton(f"1080p", callback_data=f"create_rule_movie_{movie_id}_1080p"),
+                        InlineKeyboardButton(f"2160p", callback_data=f"create_rule_movie_{movie_id}_2160p")
+                    ])
             
             keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="future_movies")])
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -992,12 +1274,156 @@ class TelegramBot:
         except Exception as e:
             logger.error(f"Error getting upcoming movies: {e}")
             await query.edit_message_text("❌ Error loading upcoming movies.")
+     
+    async def _handle_replace_rule(self, query, data, context):
+        """Handle replacing existing auto-download rules."""
+        try:
+            # Parse rule data from callback
+            parts = data.split("_")
+            content_type = parts[2]  # movie or tv
+            content_id = parts[3]
+            quality = parts[4] if len(parts) > 4 else "1080p"
+            
+            if content_type == "movie":
+                movie_data = self.tmdb_client.get_movie_details(int(content_id))
+                if movie_data:
+                    title = movie_data.get('title', 'Unknown')
+                    
+                    # Delete existing rule
+                    if self.qbittorrent_client.delete_rule_by_title(title):
+                        logger.info(f"[REPLACE_RULE] Deleted existing rule for movie: '{title}'")
+                        
+                        # Create new rule
+                        # Use upcoming movie rule for movies that are not yet released
+                        if self.tmdb_client.is_upcoming_movie(movie_data):
+                            success = self.qbittorrent_client.create_upcoming_movie_rule(title, quality, movie_data=movie_data)
+                        else:
+                            success = self.qbittorrent_client.create_movie_rule(title, quality, movie_data=movie_data)
+                        
+                        if success:
+                            # Show different message for upcoming movies
+                            if self.tmdb_client.is_upcoming_movie(movie_data):
+                                status_text = "Replaced existing rule (ignores duplicates for 365 days)"
+                            else:
+                                status_text = "Replaced existing rule with new one"
+                            
+                            await query.edit_message_text(
+                                f"✅ **Auto-Download Rule Replaced!**\n\n"
+                                f"🎬 **Movie:** {title}\n"
+                                f"📺 **Quality:** {quality}\n"
+                                f"🔄 **Action:** {status_text}",
+                                parse_mode='Markdown'
+                            )
+                        else:
+                            await query.edit_message_text("❌ Failed to create new auto-download rule.")
+                    else:
+                        await query.edit_message_text("❌ Failed to delete existing rule.")
+                else:
+                    await query.edit_message_text("❌ Could not find movie details.")
+            
+            elif content_type == "tv":
+                # Use the shows_in_production data stored in context.user_data
+                shows_in_production = context.user_data.get('shows_in_production')
+                if not shows_in_production:
+                    await query.edit_message_text("❌ No TV show details found for this search. Please try again.")
+                    return
+                
+                found_show = None
+                for show_info in shows_in_production:
+                    if show_info['id'] == int(content_id):
+                        found_show = show_info['data']
+                        break
+                
+                if found_show:
+                    title = found_show.get('name', 'Unknown')
+                    
+                    # Delete existing rule
+                    if self.qbittorrent_client.delete_rule_by_title(title):
+                        logger.info(f"[REPLACE_RULE] Deleted existing rule for TV show: '{title}'")
+                        
+                        # Ask user for season number directly
+                        context.user_data['pending_tv_rule'] = {
+                            'title': title,
+                            'quality': quality,
+                            'tv_data': found_show,
+                            'content_id': content_id
+                        }
+                        
+                        await query.edit_message_text(
+                            f"📺 **Replace Auto-Download Rule for {title}**\n\n"
+                            f"📺 **Quality:** {quality}\n"
+                            f"🔄 **Action:** Replaced existing rule\n\n"
+                            f"Enter the season number you want to auto-download:",
+                            parse_mode='Markdown'
+                        )
+                        
+                        # Set up message handler for season input
+                        context.user_data['waiting_for_season'] = True
+                    else:
+                        await query.edit_message_text("❌ Failed to delete existing rule.")
+                else:
+                    await query.edit_message_text("❌ Could not find TV show details.")
+            
+        except Exception as e:
+            logger.error(f"Error replacing rule: {e}")
+            await query.edit_message_text("❌ Error replacing auto-download rule.")
+    
+    async def _automatic_cleanup_task(self):
+        """Automatic database cleanup task that runs every 24 hours."""
+        import time
+        while True:
+            try:
+                logger.info("[AUTO_CLEANUP] Starting automatic database cleanup...")
+                
+                # Clean up downloads older than 24 hours
+                deleted_count = self.database.cleanup_old_downloads(hours=24)
+                
+                if deleted_count > 0:
+                    logger.info(f"[AUTO_CLEANUP] Cleaned up {deleted_count} old downloads")
+                else:
+                    logger.info("[AUTO_CLEANUP] No old downloads to clean up")
+                
+                # Wait 24 hours before next cleanup
+                await asyncio.sleep(24 * 60 * 60)  # 24 hours in seconds
+                
+            except Exception as e:
+                logger.error(f"[AUTO_CLEANUP] Error during automatic cleanup: {e}")
+                # Wait 1 hour before retrying on error
+                await asyncio.sleep(60 * 60)  # 1 hour in seconds
     
     def run(self):
         """Start the bot."""
         logger.info("Starting Telegram bot...")
         import threading
+        import time
+        
         # Start the completion checker in a background thread
         threading.Thread(target=lambda: asyncio.run(self.check_completed_downloads()), daemon=True).start()
-        # Start the bot
-        self.application.run_polling() 
+        
+        # Start the automatic cleanup task in a background thread
+        threading.Thread(target=lambda: asyncio.run(self._automatic_cleanup_task()), daemon=True).start()
+        
+        # Start the bot with error handling and retry logic
+        max_retries = 5
+        retry_delay = 30  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Starting bot (attempt {attempt + 1}/{max_retries})")
+                self.application.run_polling(
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=True,
+                    close_loop=False
+                )
+                break  # If we get here, the bot ran successfully
+                
+            except Exception as e:
+                logger.error(f"Bot crashed on attempt {attempt + 1}: {e}")
+                
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    logger.error("Max retries reached. Bot failed to start.")
+                    raise 
